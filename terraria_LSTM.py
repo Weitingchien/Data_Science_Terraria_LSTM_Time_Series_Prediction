@@ -12,6 +12,38 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from torch.utils.data import TensorDataset, DataLoader
 
+from statsmodels.tsa.stattools import adfuller
+
+
+from utils import high_comments_count
+
+
+
+# 進行 ADF 檢驗
+def plot_adf_test(series, adf_result):
+    plt.figure(figsize=(14, 7), dpi=120)
+    plt.plot(series, label='Time Series')
+    
+    # ADF Statistic
+    adf_statistic = adf_result[0]
+    plt.axhline(y=adf_statistic, color='r', linestyle='--', label=f'ADF Statistic = {adf_statistic:.2f}')
+    
+    # Critical Values
+    for key, value in adf_result[4].items():
+        plt.axhline(y=value, color='g', linestyle='--', label=f'Critical Value ({key}) = {value:.2f}')
+
+
+    
+    plt.title('ADF Test Result')
+    plt.xlabel('Date')
+    plt.ylabel('Values')
+    plt.legend(loc='best')  # 確保圖例在最佳位置
+    plt.tight_layout()
+    plt.show()
+
+
+
+
 
 
 """ look_back=3表示使用過去3天預測第4天的值"""
@@ -29,7 +61,7 @@ def create_dataset(data, look_back=3):
         a = data[i:(i+look_back), 0]
         X.append(a)
         y.append(data[i + look_back, 0])
-    return np.array(X), np.array(y)
+    return np.array(X).reshape(-1, 1, look_back), np.array(y)
 
 
 
@@ -240,49 +272,49 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(42)
 
+    high_comments_count()
+    
+    
+
     pd.set_option('display.max_rows', 4366)
     daily_comment_count = groupby_timestamp()
-    # print(daily_comment_count)
+    result = adfuller(daily_comment_count.values, autolag='AIC')
+    plot_adf_test(daily_comment_count, result)
 
     with open('daily_comment_count.txt', 'w') as f:
         print(daily_comment_count, file=f)
 
 
 
-    # 正規化(normalize), 讓值介於0~1
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(daily_comment_count.values.reshape(-1,1)) # values 將 Pandas series 轉換為 NumPy array, reshape(-1, 1)轉成2D array
-
     look_back = 50 # 參數是用來決定在預測未來值時應該考慮多少過去的時間步
     """測試用
     scaled_data = pd.DataFrame([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]).values.reshape(-1,1)
     create_dataset(scaled_data,look_back)
     """
-    X, y = create_dataset(scaled_data, look_back) # X.shape(4362, 3)
-    # 將 X 從一個2D array（形狀為 [樣本數量, 時間步數]）轉換為3D array（形狀為 [樣本數量, 1, 時間步數]）
-    X = X.reshape(X.shape[0], 1, X.shape[1]) # X: (4362, 1, 3) 滿足 LSTM 層輸入的形狀要求,  LSTM 需要一個三維輸入：[樣本數量, 序列長度, 特徵數量]
-    # print(f'X.shape[0]: {X.shape[0]} X.shape[1]: {X.shape[1]} X: {X}')
+
     
     # 分割數據集
-    train_size = int(len(X) * 0.8) #80%: 3489
-    val_size = int(len(X) * 0.1) #10%: 437
-    test_size = len(X) - train_size - val_size #10%: 437
+    train_size = int(len(daily_comment_count) * 0.8) #80%: 3489
+    val_size = int(len(daily_comment_count) * 0.1) #10%: 437
+    test_size = len(daily_comment_count) - train_size - val_size #10%: 437
 
-    X_train, y_train = X[:train_size], y[:train_size]
-    X_val, y_val = X[train_size:train_size+val_size], y[train_size:train_size+val_size]
-    X_test, y_test = X[train_size+val_size:], y[train_size+val_size:]
+    data_train = daily_comment_count[:train_size]
+    data_val = daily_comment_count[train_size:train_size+val_size]
+    data_test = daily_comment_count[train_size+val_size:]
 
-    
-    # 確定測試集的日期範圍
-    total_days = len(daily_comment_count)
-    test_start_index = total_days - test_size - look_back
-    test_start_date = daily_comment_count.index[test_start_index]
-    test_end_date = daily_comment_count.index[-1]
-
-    print(f"Test data range: {test_start_date} to {test_end_date}")
+    # 正規化(normalize), 讓值介於0~1
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    data_train_scaled = scaler.fit_transform(data_train.values.reshape(-1, 1))
+    data_val_scaled = scaler.transform(data_val.values.reshape(-1, 1))
+    data_test_scaled = scaler.transform(data_test.values.reshape(-1, 1))
 
 
-    model = LSTMModel(input_size=look_back, hidden_layer_size=60, output_size=1)
+    X_train, y_train = create_dataset(data_train_scaled, look_back)
+    X_val, y_val = create_dataset(data_val_scaled, look_back)
+    X_test, y_test = create_dataset(data_test_scaled, look_back)
+
+
+    model = LSTMModel(input_size=look_back, hidden_layer_size=80, output_size=1)
     loss_function = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.0005)
 
