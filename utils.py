@@ -19,3 +19,10 @@ def high_comments_count():
 
 
 
+
+
+def print_model_summary(model):
+    for layer in model.named_modules():
+        print(f"Layer: {layer[0]}")
+        for param in layer[1].parameters():
+            print(f"  - Parameter shape: {param.size()}")

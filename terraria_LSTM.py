@@ -6,6 +6,7 @@ import pandas as pd
 import datetime
 import torch.optim as optim
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import ParameterGrid
 
 
 import matplotlib.pyplot as plt
@@ -15,7 +16,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from statsmodels.tsa.stattools import adfuller
 
 
-from utils import high_comments_count
+from utils import high_comments_count, print_model_summary
 
 
 
@@ -37,7 +38,7 @@ def plot_adf_test(series, adf_result):
     plt.title('ADF Test Result')
     plt.xlabel('Date')
     plt.ylabel('Values')
-    plt.legend(loc='best')  # 確保圖例在最佳位置
+    plt.legend(loc='best')
     plt.tight_layout()
     plt.show()
 
@@ -68,8 +69,8 @@ def create_dataset(data, look_back=3):
 
 # 定義 LSTM 模型
 class LSTMModel(nn.Module):
-    # hidden_layer_size: 每層神經元的數量(預設設定為60個神經元)
-    def __init__(self, input_size=1, hidden_layer_size=60, output_size=1, num_layers=2, num_directions=1, dropout_rate=0.5):
+    # hidden_layer_size: 每層神經元的數量(預設設定為100個神經元)
+    def __init__(self, input_size=1, hidden_layer_size=100, output_size=1, num_layers=2, num_directions=1, dropout_rate=0.1):
         super(LSTMModel, self).__init__()
         self.hidden_layer_size = hidden_layer_size
         self.num_layers = num_layers
@@ -136,6 +137,7 @@ def train_model(train_loader, val_loader, model, optimizer, loss_function, patie
     epochs_without_improvement = 0
     train_losses = []
     val_losses = []
+    train_loss_epoch = []
 
     for epoch in range(300):
         model.train()
@@ -145,6 +147,7 @@ def train_model(train_loader, val_loader, model, optimizer, loss_function, patie
             train_loss = loss_function(y_pred, labels.view(-1, 1))
             train_loss.backward()
             optimizer.step()
+            train_loss_epoch.append(train_loss.item())
 
         model.eval()
         val_loss_epoch = []
@@ -154,7 +157,7 @@ def train_model(train_loader, val_loader, model, optimizer, loss_function, patie
                 val_loss = loss_function(y_pred, labels.view(-1, 1))
                 val_loss_epoch.append(val_loss.item())
 
-        avg_train_loss = train_loss.item()
+        avg_train_loss = np.mean(train_loss_epoch)
         avg_val_loss = np.mean(val_loss_epoch)
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
@@ -286,7 +289,13 @@ def main():
 
 
 
-    look_back = 50 # 參數是用來決定在預測未來值時應該考慮多少過去的時間步
+    # look_back = 45 # 參數是用來決定在預測未來值時應該考慮多少過去的時間步
+    param_grid = {'look_back': [1, 3, 5, 10, 20, 30, 40, 50, 60, 70],  # 可以根據需要擴展
+              'dropout_rate': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]}
+    
+    
+    grid = list(ParameterGrid(param_grid))
+    results = []
     """測試用
     scaled_data = pd.DataFrame([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]).values.reshape(-1,1)
     create_dataset(scaled_data,look_back)
@@ -294,13 +303,16 @@ def main():
 
     
     # 分割數據集
-    train_size = int(len(daily_comment_count) * 0.8) #80%: 3489
-    val_size = int(len(daily_comment_count) * 0.1) #10%: 437
-    test_size = len(daily_comment_count) - train_size - val_size #10%: 437
+    train_size = int(len(daily_comment_count) * 0.7) 
+    val_size = int(len(daily_comment_count) * 0.1) 
+    test_size = len(daily_comment_count) - train_size - val_size 
 
     data_train = daily_comment_count[:train_size]
+    # print(f'data_tain: {data_train} ')
     data_val = daily_comment_count[train_size:train_size+val_size]
-    data_test = daily_comment_count[train_size+val_size:]
+    # print(f'data_val: {data_val}') 
+    data_test = daily_comment_count[train_size+val_size:] 
+    # print(f'data_test: {data_test}')
 
     # 正規化(normalize), 讓值介於0~1
     scaler = MinMaxScaler(feature_range=(0, 1))
@@ -308,37 +320,52 @@ def main():
     data_val_scaled = scaler.transform(data_val.values.reshape(-1, 1))
     data_test_scaled = scaler.transform(data_test.values.reshape(-1, 1))
 
+    for params in grid:
+        look_back = params['look_back']
+        dropout_rate = params['dropout_rate']
 
-    X_train, y_train = create_dataset(data_train_scaled, look_back)
-    X_val, y_val = create_dataset(data_val_scaled, look_back)
-    X_test, y_test = create_dataset(data_test_scaled, look_back)
-
-
-    model = LSTMModel(input_size=look_back, hidden_layer_size=80, output_size=1)
-    loss_function = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
-
-    # 將數據轉換為適合 DataLoader 的形式
-    train_data = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
-    train_loader = DataLoader(dataset=train_data, batch_size=64, shuffle=True)  # 批次大小為64
-
-    # 創建validate DataLoader
-    val_data = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
-    val_loader = DataLoader(dataset=val_data, batch_size=64, shuffle=False)
-
-    # 創建測試 DataLoader
-    test_data = TensorDataset(torch.FloatTensor(X_test), torch.FloatTensor(y_test))
-    test_loader = DataLoader(dataset=test_data, batch_size=64, shuffle=False)
-
-    # 訓練模型
-    model, train_losses, val_losses = train_model(train_loader, val_loader, model, optimizer, loss_function, patience=5)
+        X_train, y_train = create_dataset(data_train_scaled, look_back)
+        X_val, y_val = create_dataset(data_val_scaled, look_back)
+        X_test, y_test = create_dataset(data_test_scaled, look_back)
 
 
-    # 評估模型
-    test_dates = daily_comment_count.index[-len(y_test):]  # 確保這些日期與 y_test 對應
-    test_predictions, test_labels = eval_model(test_loader, scaler, model, test_dates)
+        model = LSTMModel(input_size=look_back, hidden_layer_size=45, output_size=1)
+        print(model)
+        loss_function = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.0005)
+
+        # 將數據轉換為適合 DataLoader 的形式
+        train_data = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
+        train_loader = DataLoader(dataset=train_data, batch_size=64, shuffle=False)  # 批次大小為64
+
+        # 創建validate DataLoader
+        val_data = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
+        val_loader = DataLoader(dataset=val_data, batch_size=64, shuffle=False)
+
+        # 創建測試 DataLoader
+        test_data = TensorDataset(torch.FloatTensor(X_test), torch.FloatTensor(y_test))
+        test_loader = DataLoader(dataset=test_data, batch_size=64, shuffle=False)
+
+        # 訓練模型
+
+        model, train_losses, val_losses = train_model(train_loader, val_loader, model, optimizer, loss_function, patience=5)
+        print_model_summary(model)
 
 
+        # 評估模型
+        test_dates = daily_comment_count.index[-len(y_test):]  # 確保這些日期與 y_test 對應
+        test_predictions, test_labels = eval_model(test_loader, scaler, model, test_dates)
+
+
+        best_epoch = np.argmin(val_losses) #找驗證損失最小的那個epoch
+        best_loss = val_losses[best_epoch]
+        results.append((best_loss, look_back, dropout_rate))
+
+    # 找到表現最好的超參數組合
+    best_result = sorted(results, key=lambda x: x[0])[0]
+    print(f"Best validation loss: {best_result[0]}")
+    print(f"Best look_back: {best_result[1]}")
+    print(f"Best dropout_rate: {best_result[2]}")
 
     plot_original_data_predicted_data(test_predictions, test_labels, y_test)
     plot_train_lossed_val_losses(train_losses, val_losses)
