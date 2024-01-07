@@ -3,7 +3,6 @@ import torch.nn as nn
 import random
 import numpy as np
 import pandas as pd
-import datetime
 import torch.optim as optim
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import ParameterGrid
@@ -16,7 +15,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from statsmodels.tsa.stattools import adfuller
 
 
-from utils import high_comments_count, print_model_summary
+from utils import high_comments_count, print_model_summary, plot_comment_counts
 
 
 
@@ -107,7 +106,7 @@ class LSTMModel(nn.Module):
         predictions = predictions.view(batch_size, -1, self.output_size)
 
         # 取每個批次的最後一個時間步的輸出作為最終預測值
-        return predictions[:, -1, :] # 為每個批次返回序列的最後一個預測, 對下一天的評論計數的預測
+        return predictions[:, -1, :] # 為每個批次返回序列的最後一個預測，對下一天的評論計數的預測
 
 
 def groupby_timestamp():
@@ -155,13 +154,14 @@ def train_model(train_loader, val_loader, model, optimizer, loss_function, patie
             for seq, labels in val_loader:
                 y_pred = model(seq)
                 val_loss = loss_function(y_pred, labels.view(-1, 1))
+                print(f'label: {labels.view(-1, 1)}')
                 val_loss_epoch.append(val_loss.item())
 
         avg_train_loss = np.mean(train_loss_epoch)
         avg_val_loss = np.mean(val_loss_epoch)
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
-        print(f'Epoch {epoch}, Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
+        # print(f'Epoch {epoch}, Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
 
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
@@ -276,7 +276,7 @@ def main():
         torch.cuda.manual_seed_all(42)
 
     high_comments_count()
-    
+    plot_comment_counts()
     
 
     pd.set_option('display.max_rows', 4366)
@@ -289,9 +289,10 @@ def main():
 
 
 
-    # look_back = 45 # 參數是用來決定在預測未來值時應該考慮多少過去的時間步
-    param_grid = {'look_back': [1, 3, 5, 10, 20, 30, 40, 50, 60, 70],  # 可以根據需要擴展
-              'dropout_rate': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]}
+    # look_back 是用來決定在預測未來值時應該考慮多少過去的時間步
+    param_grid = {'look_back': [2, 3, 5, 10, 20, 30, 40, 50, 60, 70],
+                    'dropout_rate': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+                    'hidden_layer_size': [50, 100, 150, 200], 'learning_rate': [0.01, 0.005, 0.001, 0.0005, 0.0001]}
     
     
     grid = list(ParameterGrid(param_grid))
@@ -323,19 +324,22 @@ def main():
     for params in grid:
         look_back = params['look_back']
         dropout_rate = params['dropout_rate']
+        hidden_layer_size = params['hidden_layer_size']
+        learning_rate = params['learning_rate']
 
         X_train, y_train = create_dataset(data_train_scaled, look_back)
         X_val, y_val = create_dataset(data_val_scaled, look_back)
         X_test, y_test = create_dataset(data_test_scaled, look_back)
 
 
-        model = LSTMModel(input_size=look_back, hidden_layer_size=45, output_size=1)
+        model = LSTMModel(input_size=look_back, hidden_layer_size=hidden_layer_size, output_size=1)
         print(model)
         loss_function = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.0005)
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
         # 將數據轉換為適合 DataLoader 的形式
         train_data = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
+        print(f'train_data: {train_data}')
         train_loader = DataLoader(dataset=train_data, batch_size=64, shuffle=False)  # 批次大小為64
 
         # 創建validate DataLoader
